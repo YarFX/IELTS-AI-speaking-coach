@@ -1,0 +1,10 @@
+{
+  "name": "IELTS Speaking Coach",
+  "description": "Real-time AI voice practice tool for IELTS Speaking test preparation with live interactive examiner and structured band score feedback.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

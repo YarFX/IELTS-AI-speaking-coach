@@ -1,0 +1,49 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Represents a student user profile.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "User UID" },
+        "displayName": { "type": "string", "description": "Student display name" },
+        "email": { "type": "string", "description": "Student email address" },
+        "targetBand": { "type": "number", "description": "Target IELTS band score" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "email", "createdAt"]
+    },
+    "IELTSSession": {
+      "title": "IELTSSession",
+      "description": "Represents a completed IELTS Speaking practice test session.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "date": { "type": "string", "format": "date-time" },
+        "testType": { "type": "string", "enum": ["full", "part1", "part2", "part3"] },
+        "topicTitle": { "type": "string" },
+        "overallBand": { "type": "number" },
+        "fluencyBand": { "type": "number" },
+        "lexicalBand": { "type": "number" },
+        "grammarBand": { "type": "number" },
+        "pronunciationBand": { "type": "number" },
+        "feedbackSummary": { "type": "string" },
+        "detailedFeedback": { "type": "object" },
+        "durationSeconds": { "type": "number" },
+        "transcript": { "type": "array" }
+      },
+      "required": ["id", "userId", "date", "overallBand", "topicTitle"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Student profiles"
+    },
+    "/users/{userId}/sessions/{sessionId}": {
+      "schema": { "$ref": "#/entities/IELTSSession" },
+      "description": "User practice sessions and feedback reports"
+    }
+  }
+}
