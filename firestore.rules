@@ -1,20 +1,27 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    // Only a signed-in Firebase Auth user can touch their own data.
+    function isOwner(userId) {
+      return request.auth != null && request.auth.uid == userId;
+    }
+
     // User profile document
     match /users/{userId} {
-      allow read, write: if true;
-    }
-    
-    // User sessions & test history
-    match /users/{userId}/sessions/{sessionId} {
-      allow read, write: if true;
+      allow read, delete: if isOwner(userId);
+      allow create, update: if isOwner(userId)
+                            && request.resource.data.userId == userId;
+
+      // User sessions & test history
+      match /sessions/{sessionId} {
+        allow read, delete: if isOwner(userId);
+        allow create, update: if isOwner(userId)
+                              && request.resource.data.userId == userId;
+      }
     }
 
-    // Public or fallback session storage
-    match /sessions/{sessionId} {
-      allow read, write: if true;
-    }
+    // Anything not matched above (including the old root /sessions
+    // collection) is denied by default.
   }
 }
-
