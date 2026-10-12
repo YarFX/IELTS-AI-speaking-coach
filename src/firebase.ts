@@ -2,6 +2,7 @@ import { initializeApp, getApps, FirebaseApp } from 'firebase/app';
 import { 
   getAuth, 
   signInWithPopup, 
+  signInWithCredential,
   GoogleAuthProvider, 
   signOut as fbSignOut, 
   onAuthStateChanged, 
@@ -92,17 +93,24 @@ export interface StoredSession {
 }
 
 const LOCAL_STORAGE_KEY = 'ielts_coach_sessions';
-const USER_PROFILE_KEY = 'ielts_auth_user';
+// Legacy key: earlier versions stored an unverified "user" object here.
+const LEGACY_USER_PROFILE_KEY = 'ielts_auth_user';
+
+try {
+  localStorage.removeItem(LEGACY_USER_PROFILE_KEY);
+} catch {}
 
 // Listeners for unified auth changes
 type AuthCallback = (user: AppUser | null) => void;
 const authListeners: Set<AuthCallback> = new Set();
 
-export const subscribeToAuth = (callback: AuthCallback): (() => void) => {
-  authListeners.add(callback);
-  callback(getCurrentUser());
-  return () => {
-    authListeners.delete(callback);
+const toAppUser = (u: User | null): AppUser | null => {
+  if (!u) return null;
+  return {
+    uid: u.uid,
+    displayName: u.displayName || u.email?.split('@')[0] || 'Candidate',
+    email: u.email || null,
+    photoURL: u.photoURL || null
   };
 };
 
@@ -116,39 +124,23 @@ const notifyAuthListeners = (user: AppUser | null) => {
   });
 };
 
-export const getCurrentUser = (): AppUser | null => {
-  // 1. Check local session
-  try {
-    const raw = localStorage.getItem(USER_PROFILE_KEY);
-    if (raw) {
-      return JSON.parse(raw);
-    }
-  } catch {}
+// Firebase Auth is the single source of truth for who is signed in.
+if (auth) {
+  onAuthStateChanged(auth, (fbUser) => {
+    notifyAuthListeners(toAppUser(fbUser));
+  });
+}
 
-  // 2. Check Firebase auth
-  if (auth && auth.currentUser) {
-    return {
-      uid: auth.currentUser.uid,
-      displayName: auth.currentUser.displayName || auth.currentUser.email?.split('@')[0] || 'Candidate',
-      email: auth.currentUser.email || null,
-      photoURL: auth.currentUser.photoURL || null
-    };
-  }
-
-  return null;
+export const subscribeToAuth = (callback: AuthCallback): (() => void) => {
+  authListeners.add(callback);
+  callback(getCurrentUser());
+  return () => {
+    authListeners.delete(callback);
+  };
 };
 
-export const setStoredUser = (user: AppUser | null) => {
-  try {
-    if (user) {
-      localStorage.setItem(USER_PROFILE_KEY, JSON.stringify(user));
-    } else {
-      localStorage.removeItem(USER_PROFILE_KEY);
-    }
-  } catch (e) {
-    console.error('Error writing user to storage:', e);
-  }
-  notifyAuthListeners(user);
+export const getCurrentUser = (): AppUser | null => {
+  return toAppUser(auth?.currentUser ?? null);
 };
 
 // Helper to save session locally as reliable fallback
@@ -187,7 +179,7 @@ export async function saveSessionToFirestore(user: AppUser | User | null, sessio
     userId: uid,
   });
 
-  if (!user || !db) {
+  if (!user || !db || auth?.currentUser?.uid !== uid) {
     return localSaved;
   }
 
@@ -209,7 +201,7 @@ export async function saveSessionToFirestore(user: AppUser | User | null, sessio
 export async function loadUserSessions(user: AppUser | User | null): Promise<StoredSession[]> {
   const uid = user?.uid || 'guest';
   const local = getSessionsLocally(uid);
-  if (!user || !db || uid === 'guest') {
+  if (!user || !db || uid === 'guest' || auth?.currentUser?.uid !== uid) {
     return local;
   }
 
@@ -259,7 +251,7 @@ export async function loadUserSessions(user: AppUser | User | null): Promise<Sto
 }
 
 export async function saveUserProfile(user: AppUser | User, targetBand: number = 7.0): Promise<void> {
-  if (!user || !db) return;
+  if (!user || !db || auth?.currentUser?.uid !== user.uid) return;
   try {
     const userDocRef = doc(db, 'users', user.uid);
     await setDoc(userDocRef, {
@@ -276,107 +268,59 @@ export async function saveUserProfile(user: AppUser | User, targetBand: number =
   }
 }
 
-// Google Identity Services or Firebase Popup Login
+// Google sign-in. Every path ends in a real Firebase Auth session, so
+// Firestore security rules can check request.auth.uid.
+// Returns null if the user cancelled or sign-in failed.
 export async function loginWithGoogle(): Promise<AppUser | null> {
+  if (!auth) return null;
+  const firebaseAuth = auth;
   const oAuthClientId = firebaseConfigJson.oAuthClientId;
 
-  // 1. Try Google Identity Services OAuth popup if available
+  // 1. Google Identity Services popup (works inside iframes), exchanged
+  //    for a Firebase session via signInWithCredential.
   if (typeof window !== 'undefined' && window.google?.accounts?.oauth2 && oAuthClientId) {
     try {
-      const user = await new Promise<AppUser | null>((resolve) => {
+      const accessToken = await new Promise<string | null>((resolve) => {
         const client = window.google.accounts.oauth2.initTokenClient({
           client_id: oAuthClientId,
           scope: 'https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email openid',
-          callback: async (response: any) => {
-            if (response.error || !response.access_token) {
-              resolve(null);
-              return;
-            }
-            try {
-              const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-                headers: { Authorization: `Bearer ${response.access_token}` }
-              });
-              if (userInfoRes.ok) {
-                const info = await userInfoRes.json();
-                const appUser: AppUser = {
-                  uid: info.sub ? `google_${info.sub}` : `user_${Date.now()}`,
-                  displayName: info.name || info.given_name || 'Candidate',
-                  email: info.email || null,
-                  photoURL: info.picture || null
-                };
-                setStoredUser(appUser);
-                saveUserProfile(appUser).catch(() => {});
-                resolve(appUser);
-                return;
-              }
-            } catch (err) {
-              console.warn('Error fetching Google userinfo:', err);
-            }
-            resolve(null);
-          }
+          callback: (response: any) => {
+            resolve(response?.error || !response?.access_token ? null : response.access_token);
+          },
+          error_callback: () => resolve(null)
         });
         client.requestAccessToken({ prompt: 'select_account' });
       });
 
-      if (user) {
-        return user;
+      if (accessToken) {
+        const credential = GoogleAuthProvider.credential(null, accessToken);
+        const result = await signInWithCredential(firebaseAuth, credential);
+        const appUser = toAppUser(result.user);
+        if (appUser) {
+          saveUserProfile(appUser).catch(() => {});
+          return appUser;
+        }
       }
     } catch (e) {
-      console.warn('Google Identity Services flow encountered an issue:', e);
+      console.warn('Google Identity Services sign-in failed, trying Firebase popup:', e);
     }
   }
 
-  // 2. Try Firebase Auth with silent error handling (no uncaught 400s)
-  if (auth) {
-    try {
-      const provider = new GoogleAuthProvider();
-      provider.setCustomParameters({ prompt: 'select_account' });
-      const result = await signInWithPopup(auth, provider);
-      if (result.user) {
-        const appUser: AppUser = {
-          uid: result.user.uid,
-          displayName: result.user.displayName || result.user.email?.split('@')[0] || 'Candidate',
-          email: result.user.email || null,
-          photoURL: result.user.photoURL || null
-        };
-        setStoredUser(appUser);
-        saveUserProfile(appUser).catch(() => {});
-        return appUser;
-      }
-    } catch (err: any) {
-      console.info('Standard popup fallback activated:', err?.code || err?.message);
+  // 2. Standard Firebase Auth popup.
+  try {
+    const provider = new GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: 'select_account' });
+    const result = await signInWithPopup(firebaseAuth, provider);
+    const appUser = toAppUser(result.user);
+    if (appUser) {
+      saveUserProfile(appUser).catch(() => {});
+      return appUser;
     }
+  } catch (err: any) {
+    console.warn('Firebase popup sign-in failed:', err?.code || err?.message);
   }
 
-  // 3. Fallback: Quick Google Candidate Account Sign-In
-  const defaultEmail = 'Yaroslav.Sulyaev@gmail.com';
-  const name = defaultEmail.split('@')[0].replace('.', ' ');
-  const fallbackUser: AppUser = {
-    uid: `user_${defaultEmail.replace(/[^a-zA-Z0-9]/g, '_')}`,
-    displayName: name.charAt(0).toUpperCase() + name.slice(1),
-    email: defaultEmail,
-    photoURL: `https://api.dicebear.com/7.x/initials/svg?seed=${name}&backgroundColor=2563eb&textColor=ffffff`
-  };
-  setStoredUser(fallbackUser);
-  saveUserProfile(fallbackUser).catch(() => {});
-  return fallbackUser;
-}
-
-export async function loginWithCustomEmail(email: string, name?: string): Promise<AppUser> {
-  const cleanEmail = email.trim().toLowerCase();
-  const derivedName = name?.trim() || cleanEmail.split('@')[0].replace(/[\._-]/g, ' ');
-  const formattedName = derivedName.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-  
-  const user: AppUser = {
-    uid: `user_${cleanEmail.replace(/[^a-zA-Z0-9]/g, '_')}`,
-    displayName: formattedName || 'Candidate',
-    email: cleanEmail,
-    photoURL: `https://api.dicebear.com/7.x/initials/svg?seed=${formattedName}&backgroundColor=2563eb&textColor=ffffff`
-  };
-
-  setStoredUser(user);
-  await saveUserProfile(user);
-  return user;
+  return null;
 }
 
 export async function logoutUser(): Promise<void> {
@@ -385,6 +329,5 @@ export async function logoutUser(): Promise<void> {
       await fbSignOut(auth);
     } catch {}
   }
-  setStoredUser(null);
 }
 

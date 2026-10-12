@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { X, Check, Cloud, ShieldCheck, Mail, User as UserIcon } from 'lucide-react';
+import { X, Check, Cloud, ShieldCheck } from 'lucide-react';
 import { AppUser } from '../types';
-import { loginWithGoogle, loginWithCustomEmail } from '../firebase';
+import { loginWithGoogle } from '../firebase';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -16,35 +16,24 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   currentUser,
   targetBand
 }) => {
-  const [emailInput, setEmailInput] = useState('Yaroslav.Sulyaev@gmail.com');
-  const [nameInput, setNameInput] = useState('Yaroslav Sulyaev');
   const [isLoading, setIsLoading] = useState(false);
-  const [useManualForm, setUseManualForm] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
   const handleGoogleSignIn = async () => {
     setIsLoading(true);
+    setError(null);
     try {
-      await loginWithGoogle();
-      onClose();
+      const user = await loginWithGoogle();
+      if (user) {
+        onClose();
+      } else {
+        setError('Sign-in was cancelled or failed. Please try again.');
+      }
     } catch (e) {
-      console.warn('Google sign-in completed with fallback:', e);
-      onClose();
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleManualSignIn = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!emailInput.trim()) return;
-    setIsLoading(true);
-    try {
-      await loginWithCustomEmail(emailInput.trim(), nameInput.trim());
-      onClose();
-    } catch (e) {
-      console.error('Custom sign-in error:', e);
+      console.warn('Google sign-in failed:', e);
+      setError('Sign-in failed. Please try again.');
     } finally {
       setIsLoading(false);
     }
@@ -110,57 +99,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 <span>{isLoading ? 'Connecting...' : 'Continue with Google'}</span>
               </button>
 
-              <div className="relative flex items-center justify-center">
-                <div className="border-t border-slate-200 w-full" />
-                <span className="bg-white px-3 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">or sign in with email</span>
-              </div>
-
-              {/* Email Form */}
-              <form onSubmit={handleManualSignIn} className="space-y-3">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Google Candidate Email
-                  </label>
-                  <div className="relative">
-                    <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
-                    <input
-                      id="candidate-email-input"
-                      type="email"
-                      required
-                      value={emailInput}
-                      onChange={(e) => setEmailInput(e.target.value)}
-                      placeholder="e.g. Yaroslav.Sulyaev@gmail.com"
-                      className="w-full pl-10 pr-3.5 py-2.5 rounded-xl border border-slate-300 text-xs font-medium text-slate-800 focus:border-blue-600 focus:ring-1 focus:ring-blue-600 outline-none"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Candidate Display Name
-                  </label>
-                  <div className="relative">
-                    <UserIcon className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
-                    <input
-                      id="candidate-name-input"
-                      type="text"
-                      value={nameInput}
-                      onChange={(e) => setNameInput(e.target.value)}
-                      placeholder="Your full name"
-                      className="w-full pl-10 pr-3.5 py-2.5 rounded-xl border border-slate-300 text-xs font-medium text-slate-800 focus:border-blue-600 focus:ring-1 focus:ring-blue-600 outline-none"
-                    />
-                  </div>
-                </div>
-
-                <button
-                  id="confirm-email-signin-btn"
-                  type="submit"
-                  disabled={isLoading || !emailInput.trim()}
-                  className="w-full py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-semibold text-xs transition cursor-pointer disabled:opacity-50"
-                >
-                  Save & Sync Results
-                </button>
-              </form>
+              {error && (
+                <p className="text-xs text-red-600 text-center">{error}</p>
+              )}
             </>
           )}
 
